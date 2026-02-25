@@ -3,4 +3,6 @@ requests>=2.31
 langchain>=0.3.0
 langchain-groq>=0.2.0
 langchain-core>=0.3.0
-langchain-community>=0.3.0   # for some utilities if needed later
+langchain-community>=0.3.0
+# Add if needed:
+# langgraph>=0.2.0    ← often required for create_agent
