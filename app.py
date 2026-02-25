@@ -7,205 +7,178 @@ from datetime import datetime
 from langchain_groq import ChatGroq
 from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from langchain.agents import create_react_agent, AgentExecutor
 
 # ────────────────────────────────────────────────
-# CONFIG
+# CONFIG – CHANGE THIS
 # ────────────────────────────────────────────────
-ESP_IP = "192.168.1.13"           # ← CHANGE THIS
+ESP_IP = "192.168.1.13"           # your ESP IP
 STATUS_URL = f"http://{ESP_IP}/status"
 SET_URL_TEMPLATE = f"http://{ESP_IP}/set/{{pin}}/{{state}}"
 
 GROQ_API_KEY = st.secrets.get("GROQ_API_KEY") or ""
 if not GROQ_API_KEY:
-    st.error("GROQ_API_KEY not found. Add it to Streamlit secrets.")
+    st.error("GROQ_API_KEY missing → add to Streamlit secrets")
     st.stop()
 
-PINS = {
-    "D0": {"gpio": "GPIO16", "note": "Wake/sleep – careful"},
-    "D1": {"gpio": "GPIO5",  "note": "Safe"},
-    "D2": {"gpio": "GPIO4",  "note": "Safe"},
-    "D3": {"gpio": "GPIO0",  "note": "Boot HIGH – flash button"},
-    "D4": {"gpio": "GPIO2",  "note": "Boot HIGH – LED often"},
-    "D5": {"gpio": "GPIO14", "note": "Safe"},
-    "D6": {"gpio": "GPIO12", "note": "Safe"},
-    "D7": {"gpio": "GPIO13", "note": "Safe"},
-    "D8": {"gpio": "GPIO15", "note": "Boot LOW"},
-}
+PINS = ["D0","D1","D2","D3","D4","D5","D6","D7","D8"]
 
 # ────────────────────────────────────────────────
 # TOOLS
 # ────────────────────────────────────────────────
 @tool
 def set_pin(pin: str, state: str) -> str:
-    """Set pin like D1, D5 to 'on' or 'off'."""
-    pin = pin.upper().strip()
-    state = state.lower().strip()
+    """Set pin (D0-D8) to on or off."""
+    pin = pin.upper()
+    state = state.lower()
     if pin not in PINS:
-        return f"Invalid pin. Available: {', '.join(PINS.keys())}"
+        return f"Bad pin. Use: {', '.join(PINS)}"
     if state not in ["on", "off"]:
-        return "State must be 'on' or 'off'"
+        return "State must be on/off"
     try:
         url = SET_URL_TEMPLATE.format(pin=pin, state=state)
         r = requests.get(url, timeout=5)
-        return f"{pin} → {state.upper()}" if r.status_code == 200 else f"ESP error: {r.text}"
+        return f"{pin} set to {state.upper()}" if r.ok else f"ESP failed: {r.text}"
     except Exception as e:
-        return f"Connection failed: {str(e)}"
+        return f"Conn error: {str(e)}"
 
 
 @tool
-def get_all_pin_status() -> str:
-    """Get current status of all pins."""
+def get_pin_status() -> str:
+    """Get status of all pins."""
     try:
         r = requests.get(STATUS_URL, timeout=5)
-        if r.status_code != 200:
-            return f"HTTP error {r.status_code}"
-        data = r.json().get("pins", {})
-        return "\n".join(f"{p}: {'ON' if data.get(p, False) else 'OFF'}" for p in PINS)
+        if not r.ok:
+            return f"HTTP {r.status_code}"
+        pins = r.json().get("pins", {})
+        return "\n".join(f"{p}: {'ON' if pins.get(p, False) else 'OFF'}" for p in PINS)
     except Exception as e:
-        return f"Status fetch failed: {str(e)}"
+        return f"Status error: {str(e)}"
 
 
-tools = [set_pin, get_all_pin_status]
+tools = [set_pin, get_pin_status]
 
 # ────────────────────────────────────────────────
-# LLM + ReAct Agent (classic & stable)
+# LLM + Agent (classic ReAct – works in 0.2.x)
 # ────────────────────────────────────────────────
 llm = ChatGroq(
     groq_api_key=GROQ_API_KEY,
     model="llama-3.1-70b-versatile",
     temperature=0.3,
-    max_tokens=600,
 )
 
-system_prompt_text = f"""You are a helpful ESP8266 assistant in Ludhiana, Punjab.
-Time: {datetime.now().strftime("%Y-%m-%d %H:%M IST")}
+system_prompt = f"""ESP8266 assistant. Time: {datetime.now().strftime("%Y-%m-%d %H:%M IST")}
 
-Pins you control: {', '.join(PINS.keys())}.
+Pins: {', '.join(PINS)}
 
-Always use get_all_pin_status when asked about status.
-Use set_pin only for clear on/off requests.
-Be concise. Ask if unclear.
+Use get_pin_status for status questions.
+Use set_pin only for clear turn on/off commands.
+Be short. Ask if unclear.
 """
 
 prompt = ChatPromptTemplate.from_messages([
-    ("system", system_prompt_text),
+    ("system", system_prompt),
     MessagesPlaceholder("chat_history"),
     ("human", "{input}"),
     MessagesPlaceholder("agent_scratchpad"),
 ])
 
-# Create classic ReAct agent
-agent = create_react_agent(
-    llm=llm,
-    tools=tools,
-    prompt=prompt,
-)
-
+agent = create_react_agent(llm, tools, prompt)
 agent_executor = AgentExecutor(
     agent=agent,
     tools=tools,
     verbose=False,
     handle_parsing_errors=True,
-    max_iterations=12,          # safety against loops
+    max_iterations=10,
 )
 
 # ────────────────────────────────────────────────
-# Streamlit App
+# Streamlit UI (same as before – manual + chat)
 # ────────────────────────────────────────────────
-st.set_page_config(page_title="ESP8266 Groq Control", layout="wide")
+st.set_page_config(page_title="ESP8266 Control", layout="wide")
 
-tab1, tab2 = st.tabs(["Manual Control", "Chat (Natural Language)"])
+tab1, tab2 = st.tabs(["Manual", "Chat"])
 
-# ── Manual Tab ──────────────────────────────────────────────────────
 with tab1:
-    st.title("ESP8266 Manual Control")
-    st.caption(f"ESP IP: {ESP_IP}")
+    st.title("Manual Pin Control")
+    conn = st.empty()
 
-    conn_status = st.empty()
-
-    # Init session state
-    for p in PINS:
-        if f"real_{p}" not in st.session_state:
-            st.session_state[f"real_{p}"] = False
+    if "states" not in st.session_state:
+        st.session_state.states = {p: False for p in PINS}
 
     def poll():
         while True:
             try:
                 r = requests.get(STATUS_URL, timeout=4)
-                if r.status_code == 200:
-                    conn_status.success("Connected ✅")
+                if r.ok:
+                    conn.success("Connected")
                     data = r.json().get("pins", {})
                     for p in PINS:
-                        st.session_state[f"real_{p}"] = bool(data.get(p, False))
+                        st.session_state.states[p] = bool(data.get(p))
                 else:
-                    conn_status.error("ESP error")
+                    conn.error("ESP error")
             except:
-                conn_status.error("Not connected ⚠️")
+                conn.error("Disconnected")
             time.sleep(5)
 
-    if "poller" not in st.session_state:
-        st.session_state.poller = True
+    if "poll_run" not in st.session_state:
+        st.session_state.poll_run = True
         threading.Thread(target=poll, daemon=True).start()
 
-    st.subheader("Pin States")
     cols = st.columns(3)
-    for i, (p, info) in enumerate(PINS.items()):
-        val = st.session_state.get(f"real_{p}", False)
-        cols[i % 3].metric(f"{p} ({info['gpio']})", "ON" if val else "OFF", help=info["note"])
+    for i, p in enumerate(PINS):
+        cols[i % 3].metric(p, "ON" if st.session_state.states[p] else "OFF")
 
     st.subheader("Toggle")
-    ctrl_cols = st.columns(3)
-    for i, (p, info) in enumerate(PINS.items()):
-        with ctrl_cols[i % 3]:
-            curr = st.session_state.get(f"real_{p}", False)
-            tog = st.checkbox(p, value=curr, key=f"chk_{p}", help=info["note"])
+    tcols = st.columns(3)
+    for i, p in enumerate(PINS):
+        with tcols[i % 3]:
+            curr = st.session_state.states[p]
+            tog = st.checkbox(p, value=curr, key=f"chk_{p}")
             if tog != curr:
                 s = "on" if tog else "off"
                 try:
                     url = SET_URL_TEMPLATE.format(pin=p, state=s)
                     r = requests.get(url, timeout=5)
-                    if r.status_code == 200:
-                        st.session_state[f"real_{p}"] = tog
-                        st.success(f"{p} → {s.upper()}")
+                    if r.ok:
+                        st.session_state.states[p] = tog
+                        st.success(f"{p} {s.upper()}")
                     else:
-                        st.error("ESP failed")
-                except Exception as e:
-                    st.error(f"Error: {e}")
+                        st.error("ESP no")
+                except:
+                    st.error("Conn fail")
                 st.rerun()
 
-# ── Chat Tab ────────────────────────────────────────────────────────
 with tab2:
-    st.title("Natural Language Control")
+    st.title("Natural Language")
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    if "msgs" not in st.session_state:
+        st.session_state.msgs = []
 
-    for msg in st.session_state.messages:
-        role = "assistant" if isinstance(msg, AIMessage) else "user"
+    for m in st.session_state.msgs:
+        role = "assistant" if isinstance(m, AIMessage) else "user"
         with st.chat_message(role):
-            st.markdown(msg.content)
+            st.write(m.content)
 
-    if prompt := st.chat_input("e.g. turn D5 on, show status, all off"):
-        st.session_state.messages.append(HumanMessage(content=prompt))
+    if txt := st.chat_input("turn D5 on / status ..."):
+        st.session_state.msgs.append(HumanMessage(content=txt))
         with st.chat_message("user"):
-            st.markdown(prompt)
+            st.write(txt)
 
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                try:
-                    result = agent_executor.invoke({
-                        "input": prompt,
-                        "chat_history": st.session_state.messages[:-1],  # exclude current
-                    })
-                    reply = result["output"]
-                    st.markdown(reply)
-                    st.session_state.messages.append(AIMessage(content=reply))
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
+        with st.spinner("..."):
+            try:
+                res = agent_executor.invoke({
+                    "input": txt,
+                    "chat_history": st.session_state.msgs[:-1]
+                })
+                reply = res["output"]
+                st.chat_message("assistant").write(reply)
+                st.session_state.msgs.append(AIMessage(content=reply))
+            except Exception as e:
+                st.error(f"Agent fail: {str(e)}")
 
-    if st.button("Clear Chat"):
-        st.session_state.messages = []
+    if st.button("Clear"):
+        st.session_state.msgs = []
         st.rerun()
