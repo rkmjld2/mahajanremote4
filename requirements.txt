@@ -1,7 +1,7 @@
-streamlit>=1.38.0
+streamlit>=1.38.0,<1.41.0
 requests>=2.31
-langchain>=0.3.0
-langchain-groq>=0.2.0
-langchain-core>=0.3.0
-langchain-community>=0.3.0
-langgraph>=0.2.20
+langchain==0.2.16          # last major series before big 1.0 changes
+langchain-groq==0.1.9
+langchain-core==0.2.38
+langchain-community==0.2.16
+langgraph==0.2.16          # compatible with above
