@@ -6,8 +6,7 @@ from datetime import datetime
 
 from langchain_groq import ChatGroq
 from langchain_core.tools import tool
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 # ────────────────────────────────────────────────
 # CONFIG – CHANGE THESE
@@ -16,13 +15,13 @@ ESP_IP = "192.168.1.13"           # ← your ESP8266 IP here
 STATUS_URL = f"http://{ESP_IP}/status"
 SET_URL_TEMPLATE = f"http://{ESP_IP}/set/{{pin}}/{{state}}"
 
-# Get Groq API key (Streamlit secrets preferred for cloud deployment)
+# Get Groq API key (Streamlit secrets preferred)
 GROQ_API_KEY = st.secrets.get("GROQ_API_KEY") or ""
 if not GROQ_API_KEY:
-    st.error("GROQ_API_KEY not found. Please add it to Streamlit secrets (recommended) or set as environment variable.")
+    st.error("GROQ_API_KEY not found. Add it to Streamlit secrets or environment variables.")
     st.stop()
 
-# Pin definitions (must match your ESP firmware)
+# Pin definitions (must match ESP firmware)
 PINS = {
     "D0": {"gpio": "GPIO16", "note": "Wake/sleep – use carefully"},
     "D1": {"gpio": "GPIO5",  "note": "Safe general purpose"},
@@ -36,16 +35,16 @@ PINS = {
 }
 
 # ────────────────────────────────────────────────
-# TOOLS the agent can call
+# TOOLS
 # ────────────────────────────────────────────────
 @tool
 def set_pin(pin: str, state: str) -> str:
-    """Set an ESP8266 pin to ON or OFF. Use pin names like D1, D5. State must be 'on' or 'off'."""
+    """Set ESP8266 pin to ON or OFF. Pin like D1, D5. State = 'on' or 'off'."""
     pin = pin.upper().strip()
     state = state.lower().strip()
 
     if pin not in PINS:
-        return f"Error: Unknown pin '{pin}'. Available pins: {', '.join(PINS.keys())}"
+        return f"Error: Unknown pin '{pin}'. Available: {', '.join(PINS.keys())}"
 
     if state not in ["on", "off"]:
         return "Error: state must be 'on' or 'off'"
@@ -63,7 +62,7 @@ def set_pin(pin: str, state: str) -> str:
 
 @tool
 def get_all_pin_status() -> str:
-    """Fetch current ON/OFF status of all ESP8266 pins."""
+    """Get current ON/OFF status of all ESP8266 pins."""
     try:
         r = requests.get(STATUS_URL, timeout=5)
         if r.status_code != 200:
@@ -79,15 +78,16 @@ def get_all_pin_status() -> str:
 tools = [set_pin, get_all_pin_status]
 
 # ────────────────────────────────────────────────
-# LLM & Agent Setup (modern & stable pattern Feb 2026)
+# LLM & Agent (fixed – no state_modifier)
 # ────────────────────────────────────────────────
 llm = ChatGroq(
     groq_api_key=GROQ_API_KEY,
-    model="llama-3.1-70b-versatile",  # good tool caller, fast on Groq
+    model="llama-3.1-70b-versatile",
     temperature=0.3,
     max_tokens=600,
 )
 
+# System prompt as messages_modifier (string or list of messages)
 system_prompt = f"""You are a helpful ESP8266 smart home assistant running in Ludhiana, Punjab.
 Current date/time: {datetime.now().strftime("%Y-%m-%d %H:%M IST")}
 
@@ -101,37 +101,29 @@ Rules:
 - Never assume pin states — always check with tool if needed.
 """
 
-prompt = ChatPromptTemplate.from_messages([
-    ("system", system_prompt),
-    MessagesPlaceholder("chat_history"),
-    ("human", "{input}"),
-    MessagesPlaceholder("agent_scratchpad"),
-])
-
-# Modern agent (from langgraph – reliable in 2025/2026)
 from langgraph.prebuilt import create_react_agent
 
 agent_executor = create_react_agent(
     model=llm,
     tools=tools,
-    state_modifier=prompt,   # injects system prompt & history handling
+    messages_modifier=system_prompt,   # ← this is the correct parameter
+    # checkpointer=...   # optional if you want persistence later
 )
 
 # ────────────────────────────────────────────────
-# Streamlit App
+# Streamlit UI
 # ────────────────────────────────────────────────
 st.set_page_config(page_title="ESP8266 Groq Control", layout="wide")
 
 tab1, tab2 = st.tabs(["Manual Pin Control", "Natural Language (Groq)"])
 
-# ── Tab 1: Manual Controls ──────────────────────────────────────────
+# ── Tab 1: Manual ───────────────────────────────────────────────────
 with tab1:
     st.title("ESP8266 Manual Control")
     st.caption(f"Connected to ESP at: {ESP_IP}")
 
     conn_indicator = st.empty()
 
-    # Session state for real pin values
     for pin in PINS:
         if f"real_{pin}" not in st.session_state:
             st.session_state[f"real_{pin}"] = False
@@ -155,7 +147,6 @@ with tab1:
         st.session_state.poller_started = True
         threading.Thread(target=poll_esp_status, daemon=True).start()
 
-    # Display current states
     st.subheader("Current Pin States")
     cols = st.columns(3)
     for i, (pin, info) in enumerate(PINS.items()):
@@ -163,11 +154,9 @@ with tab1:
         cols[i % 3].metric(
             label=f"{pin} ({info['gpio']})",
             value="ON" if state else "OFF",
-            delta=None,
             help=info["note"]
         )
 
-    # Toggle controls
     st.subheader("Toggle Pins")
     ctrl_cols = st.columns(3)
     for i, (pin, info) in enumerate(PINS.items()):
@@ -194,11 +183,10 @@ with tab1:
                     st.error(f"Failed to send: {e}")
                 st.rerun()
 
-# ── Tab 2: Groq Natural Language Chat ───────────────────────────────
+# ── Tab 2: Groq Chat ────────────────────────────────────────────────
 with tab2:
     st.title("Control ESP8266 with Natural Language")
 
-    # Chat history
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
 
@@ -207,7 +195,6 @@ with tab2:
         with st.chat_message(role):
             st.markdown(message.content)
 
-    # User input
     if user_input := st.chat_input("e.g. turn D5 on, status of D1, all off..."):
         st.session_state.chat_messages.append(HumanMessage(content=user_input))
         with st.chat_message("user"):
