@@ -4,5 +4,4 @@ langchain>=0.3.0
 langchain-groq>=0.2.0
 langchain-core>=0.3.0
 langchain-community>=0.3.0
-# Add if needed:
-# langgraph>=0.2.0    ← often required for create_agent
+langgraph>=0.2.20
