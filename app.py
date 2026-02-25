@@ -1,244 +1,217 @@
 import streamlit as st
-import mysql.connector
-import tempfile
-from datetime import datetime, timedelta
-import pandas as pd
-from io import StringIO
-# ── LangChain imports ───────────────────────────────────────────────
-from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
+import requests
+import time
+import threading
+from datetime import datetime
+
 from langchain_groq import ChatGroq
-from langchain_classic.chains import create_retrieval_chain
-from langchain_classic.chains.combine_documents import create_stuff_documents_chain
-from langchain_core.prompts import ChatPromptTemplate
-st.set_page_config(page_title="Blood Reports Manager + RAG", layout="wide")
-st.title("Blood Reports Database Manager + RAG Analysis")
-# ── TiDB Config ─────────────────────────────────────────────────────
-db_config = {
-    "host": st.secrets["tidb"]["host"],
-    "port": st.secrets["tidb"]["port"],
-    "user": st.secrets["tidb"]["user"],
-    "password": st.secrets["tidb"]["password"],
-    "database": st.secrets["tidb"]["database"],
+from langchain_core.tools import tool
+from langchain.agents import create_tool_calling_agent, AgentExecutor
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import AIMessage, HumanMessage
+
+# ────────────────────────────────────────────────
+# CONFIG – CHANGE THESE
+# ────────────────────────────────────────────────
+ESP_IP = "192.168.1.13"           # your ESP8266 IP
+STATUS_URL = f"http://{ESP_IP}/status"
+SET_URL_TEMPLATE = f"http://{ESP_IP}/set/{{pin}}/{{state}}"
+
+GROQ_API_KEY = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
+if not GROQ_API_KEY:
+    st.error("GROQ_API_KEY not found. Add it to Streamlit secrets or environment variables.")
+    st.stop()
+
+# Pin definitions (same as ESP firmware)
+PINS = {
+    "D0": {"gpio": "GPIO16", "note": "Wake/sleep"},
+    "D1": {"gpio": "GPIO5",  "note": "Safe"},
+    "D2": {"gpio": "GPIO4",  "note": "Safe"},
+    "D3": {"gpio": "GPIO0",  "note": "Boot HIGH / Flash"},
+    "D4": {"gpio": "GPIO2",  "note": "Boot HIGH / LED"},
+    "D5": {"gpio": "GPIO14", "note": "Safe"},
+    "D6": {"gpio": "GPIO12", "note": "Safe"},
+    "D7": {"gpio": "GPIO13", "note": "Safe"},
+    "D8": {"gpio": "GPIO15", "note": "Boot LOW"},
 }
-# Write SSL certificate to temporary file
-with tempfile.NamedTemporaryFile(delete=False) as tmp:
-    tmp.write(st.secrets["tidb"]["ssl_ca"].encode())
-    db_config["ssl_ca"] = tmp.name
-    db_config["ssl_verify_cert"] = True
-# ── Helper function to run SQL queries ──────────────────────────────
-def run_query(query, params=None, fetch=False):
+
+# ────────────────────────────────────────────────
+# TOOLS – these are what the LLM can call
+# ────────────────────────────────────────────────
+@tool
+def set_pin(pin: str, state: str) -> str:
+    """Set a specific ESP8266 pin to ON or OFF. Pin must be like 'D1', 'D5'. State must be 'on' or 'off'."""
+    pin = pin.upper().strip()
+    state = state.lower().strip()
+
+    if pin not in PINS:
+        return f"Error: Unknown pin {pin}. Available: {', '.join(PINS.keys())}"
+
+    if state not in ["on", "off"]:
+        return "Error: state must be 'on' or 'off'"
+
     try:
-        conn = mysql.connector.connect(**db_config)
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute(query, params or ())
-        result = cursor.fetchall() if fetch else None
-        conn.commit()
+        url = SET_URL_TEMPLATE.format(pin=pin, state=state)
+        resp = requests.get(url, timeout=4)
+        if resp.status_code == 200:
+            return f"Success: {pin} set to {state.upper()}"
+        else:
+            return f"Error from ESP: {resp.text} (code {resp.status_code})"
     except Exception as e:
-        st.error(f"Database error: {e}")
-        result = None
-    finally:
-        cursor.close()
-        conn.close()
-    return result
-# ── Insert Record Form ──────────────────────────────────────────────
-st.header("➕ Insert Record")
-with st.form("insert_form"):
-    col1, col2 = st.columns(2)
-    with col1:
-        name = st.text_input("Patient Name")
-        test_name = st.text_input("Test Name")
-        result = st.number_input("Result", step=0.01, format="%.2f")
-    with col2:
-        unit = st.text_input("Unit")
-        ref_range = st.text_input("Reference Range")
-        flag = st.text_input("Flag (e.g. High / Low / Normal)")
-    submitted = st.form_submit_button("Insert Record")
-    if submitted:
-        if name and test_name:
-            run_query(
-                """
-                INSERT INTO blood_reports
-                (name, test_name, result, unit, ref_range, flag, timestamp)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """,
-                (name.strip(), test_name, result, unit, ref_range, flag, datetime.now()),
-            )
-            st.success("✅ Record inserted successfully!")
-        else:
-            st.warning("Please fill at least Patient Name and Test Name.")
-# ── Search Records (EXACT name match) ───────────────────────────────
-st.header("🔍 Search Records")
-col1, col2, col3 = st.columns([3, 2, 2])
-with col1:
-    search_name = st.text_input("Patient Name (exact match required)", key="search_name_exact")
-with col2:
-    start_date = st.date_input("From Date", format="YYYY-MM-DD")
-with col3:
-    end_date = st.date_input("To Date", format="YYYY-MM-DD")
-# Store last search results in session state
-if "last_search_rows" not in st.session_state:
-    st.session_state.last_search_rows = None
-    st.session_state.last_search_name = None
-if st.button("Search"):
-    if search_name and start_date and end_date:
-        end_date_inclusive = end_date + timedelta(days=1)
-        rows = run_query(
-            """
-            SELECT * FROM blood_reports
-            WHERE name = %s
-            AND timestamp >= %s
-            AND timestamp < %s
-            ORDER BY timestamp DESC
-            """,
-            (search_name.strip(), start_date, end_date_inclusive),
-            fetch=True,
-        )
-       
-        if rows:
-            st.session_state.last_search_rows = rows
-            st.session_state.last_search_name = search_name.strip()
-            st.dataframe(rows)
-            st.success(f"Found {len(rows)} record(s) for exact name: {search_name.strip()}")
-        else:
-            st.session_state.last_search_rows = []
-            st.info("No records found for this exact name and date range.")
-    else:
-        st.warning("Please enter patient name and both dates.")
-    # Download button for searched records
-    if st.session_state.get("last_search_rows") and st.session_state.last_search_rows:
-        df_search = pd.DataFrame(st.session_state.last_search_rows)
-        csv_search = df_search.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Download Searched Records (CSV)",
-            data=csv_search,
-            file_name=f"blood_reports_{st.session_state.last_search_name}.csv",
-            mime="text/csv",
-            key="download_searched"
-        )
-# ── Advanced Search with MySQL Query ────────────────────────────────
-st.header("🔍 Advanced Search with MySQL Query")
-if "last_advanced_rows" not in st.session_state:
-    st.session_state.last_advanced_rows = None
-advanced_query = st.text_area("Enter your MySQL SELECT query here (for searching records only)")
-if st.button("Execute Advanced Search"):
-    if advanced_query and advanced_query.strip().lower().startswith("select"):
-        try:
-            rows = run_query(advanced_query, fetch=True)
-            if rows:
-                st.session_state.last_advanced_rows = rows
-                st.dataframe(rows)
-                st.success(f"Found {len(rows)} record(s) from advanced query.")
-            else:
-                st.session_state.last_advanced_rows = []
-                st.info("No records found from advanced query.")
-            # Download button for advanced search records
-            if st.session_state.get("last_advanced_rows") and st.session_state.last_advanced_rows:
-                df_advanced = pd.DataFrame(st.session_state.last_advanced_rows)
-                csv_advanced = df_advanced.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="📥 Download Advanced Search Records (CSV)",
-                    data=csv_advanced,
-                    file_name="blood_reports_advanced.csv",
-                    mime="text/csv",
-                    key="download_advanced"
-                )
-        except Exception as e:
-            st.error(f"Query execution error: {e}")
-    else:
-        st.warning("Please enter a valid SELECT query.")
-# ── Show All Records ────────────────────────────────────────────────
-st.header("📋 All Records")
-if st.button("Show All Records"):
-    rows = run_query("SELECT * FROM blood_reports ORDER BY timestamp DESC", fetch=True)
-    if rows:
-        df_all = pd.DataFrame(rows)
-        st.dataframe(df_all)
-        # Download button for all records
-        csv_all = df_all.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Download All Records (CSV)",
-            data=csv_all,
-            file_name="blood_reports_all.csv",
-            mime="text/csv",
-            key="download_all"
-        )
-    else:
-        st.info("No records in the database yet.")
-# ── RAG Analysis ────────────────────────────────────────────────────
-st.header("🧠 RAG: Abnormal Reports & Recommendations")
-if st.button("Run RAG Analysis (may take 10–30s first time)"):
-    with st.spinner("Preparing records + building vector store + analyzing..."):
-       
-        # Decide which records to analyze (prioritize advanced > exact search > all)
-        if st.session_state.get("last_advanced_rows") is not None:
-            rows = st.session_state.last_advanced_rows
-            source_info = "advanced query results"
-        elif st.session_state.get("last_search_rows") is not None and st.session_state.last_search_rows:
-            rows = st.session_state.last_search_rows
-            source_info = f"filtered search results for exact name '{st.session_state.last_search_name}'"
-        else:
-            rows = run_query("SELECT * FROM blood_reports", fetch=True)
-            source_info = "ALL records in database (no search filter applied yet)"
-        if not rows:
-            st.warning("No records available to analyze. Please insert or search for records first.")
-        else:
-            st.info(f"Analyzing {len(rows)} record(s) from: {source_info}")
-            # Prepare document texts
-            texts = []
-            for r in rows:
-                texts.append(
-                    f"Patient: {r['name']} | Test: {r['test_name']} | "
-                    f"Result: {r['result']} {r['unit']} | Ref Range: {r['ref_range']} | "
-                    f"Flag: {r['flag']} | Date: {r.get('timestamp', 'N/A')}"
-                )
-            # Embeddings
-            embeddings = HuggingFaceEmbeddings(
-                model_name="sentence-transformers/all-MiniLM-L6-v2",
-                model_kwargs={"device": "cpu"},
-                encode_kwargs={"normalize_embeddings": True},
-            )
-            vectorstore = FAISS.from_texts(texts, embeddings)
-            retriever = vectorstore.as_retriever(search_kwargs={"k": min(5, len(texts))})
-            # LLM
-            llm = ChatGroq(
-                model="llama-3.3-70b-versatile",
-                temperature=0.3,
-                groq_api_key=st.secrets["groq"]["api_key"],
-            )
-            # Updated prompt with medicine suggestions
-            system_prompt = """You are a helpful educational assistant summarizing blood test results.
-Use ONLY the provided report excerpts below.
-Your response MUST include:
-1. Identification of clearly abnormal values (where flag is 'High'/'Low' or result is outside ref range).
-2. For EACH abnormal test: very brief general interpretation.
-3. For EACH abnormal test: common lifestyle recommendations (diet, exercise, habits) AND typical/commonly associated medicines, supplements or treatments (e.g. statins for high cholesterol, iron for low hemoglobin, vitamin D for deficiency, etc.).
-VERY IMPORTANT – ALWAYS INCLUDE THIS EXACT DISCLAIMER AT END OF YOUR RESPONSE:
-"THIS IS GENERAL EDUCATIONAL INFORMATION ONLY – NOT MEDICAL ADVICE, NOT A DIAGNOSIS, NOT A TREATMENT PLAN.
-DO NOT TAKE ANY MEDICATION OR SUPPLEMENT BASED ON THIS OUTPUT.
-CONSULT A QUALIFIED DOCTOR FOR PERSONALIZED INTERPRETATION, DIAGNOSIS AND PRESCRIPTION."
-Never recommend specific doses, brands or starting/stopping medicines.
-Keep response clear, structured and concise.
-Context (blood reports):
-{context}"""
-            prompt = ChatPromptTemplate.from_messages(
-                [("system", system_prompt), ("human", "{input}")]
-            )
-            combine_docs_chain = create_stuff_documents_chain(llm, prompt)
-            rag_chain = create_retrieval_chain(retriever, combine_docs_chain)
-            query = "Identify abnormal blood test results, explain briefly, list common general recommendations and typical medicines/supplements for each abnormal parameter."
+        return f"Connection failed: {str(e)}"
+
+@tool
+def get_all_pin_status() -> str:
+    """Get current ON/OFF status of all ESP8266 pins."""
+    try:
+        r = requests.get(STATUS_URL, timeout=4)
+        if r.status_code != 200:
+            return f"Error: status code {r.status_code}"
+        data = r.json()
+        pins = data.get("pins", {})
+        lines = []
+        for p in PINS:
+            val = pins.get(p, False)
+            lines.append(f"{p}: {'ON' if val else 'OFF'}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to get status: {str(e)}"
+
+tools = [set_pin, get_all_pin_status]
+
+# ────────────────────────────────────────────────
+# LLM + Agent setup
+# ────────────────────────────────────────────────
+llm = ChatGroq(
+    groq_api_key=GROQ_API_KEY,
+    model="llama-3.1-70b-versatile",   # or "mixtral-8x7b-32768", "gemma2-9b-it" etc.
+    temperature=0.4,
+    max_tokens=512,
+)
+
+system_prompt = f"""You are a helpful ESP8266 smart home assistant.
+You control pins: {', '.join(PINS.keys())}.
+
+Use tools to:
+- Get current status → get_all_pin_status
+- Change pin state → set_pin (only call when user clearly wants to change something)
+
+Be concise. If user asks status → use tool. If unclear → ask for clarification.
+Current time: {datetime.now().strftime("%Y-%m-%d %H:%M IST")}
+"""
+
+prompt = ChatPromptTemplate.from_messages([
+    ("system", system_prompt),
+    MessagesPlaceholder("chat_history"),
+    ("human", "{input}"),
+    MessagesPlaceholder("agent_scratchpad"),
+])
+
+agent = create_tool_calling_agent(llm, tools, prompt)
+agent_executor = AgentExecutor(
+    agent=agent,
+    tools=tools,
+    verbose=False,          # change to True for debugging
+    handle_parsing_errors=True,
+)
+
+# ────────────────────────────────────────────────
+# Streamlit UI
+# ────────────────────────────────────────────────
+st.set_page_config(page_title="ESP8266 Groq Control", layout="wide")
+
+tab1, tab2 = st.tabs(["📟 Manual Control", "🗣️ Natural Language (Groq + LangChain)"])
+
+# ── Tab 1: Manual (same as before, slightly cleaned) ────────────────
+with tab1:
+    st.title("ESP8266 Manual Pin Control")
+    st.caption(f"ESP at: http://{ESP_IP}")
+
+    conn_status = st.empty()
+    status_cols = st.columns(3)
+
+    # Poll function
+    def poll_esp():
+        while True:
             try:
-                result = rag_chain.invoke({"input": query})
-                answer_text = result["answer"]
-                st.subheader(f"🔎 AI Analysis (based on {source_info})")
-                st.markdown(answer_text)
-                # Download RAG result as text
-                st.download_button(
-                    label="📥 Download RAG Analysis Result (TXT)",
-                    data=answer_text,
-                    file_name="rag_analysis_abnormal_reports.txt",
-                    mime="text/plain",
-                    key="download_rag"
-                )
-            except Exception as e:
-                st.error(f"Error during analysis: {str(e)}")
+                r = requests.get(STATUS_URL, timeout=3)
+                if r.status_code == 200:
+                    conn_status.success("Connected ✅")
+                    pins_data = r.json().get("pins", {})
+                    for lbl, info in PINS.items():
+                        val = pins_data.get(lbl, False)
+                        st.session_state[f"real_{lbl}"] = val
+                else:
+                    conn_status.error("ESP returned error")
+            except:
+                conn_status.error("Not connected ⚠️")
+            time.sleep(5)
+
+    if "poller_running" not in st.session_state:
+        st.session_state.poller_running = True
+        threading.Thread(target=poll_esp, daemon=True).start()
+
+    # Show statuses
+    for i, (lbl, info) in enumerate(PINS.items()):
+        real_state = st.session_state.get(f"real_{lbl}", False)
+        col = status_cols[i % 3]
+        col.metric(f"{lbl} ({info['gpio']})", "ON" if real_state else "OFF", help=info["note"])
+
+    # Controls
+    st.subheader("Toggle Pins")
+    ctrl_cols = st.columns(3)
+    for i, (lbl, info) in enumerate(PINS.items()):
+        col = ctrl_cols[i % 3]
+        with col:
+            curr = st.session_state.get(f"real_{lbl}", False)
+            tog = st.checkbox(lbl, value=curr, key=f"chk_{lbl}", help=info["note"])
+            if tog != curr:
+                state_str = "on" if tog else "off"
+                try:
+                    url = SET_URL_TEMPLATE.format(pin=lbl, state=state_str)
+                    r = requests.get(url, timeout=4)
+                    if r.status_code == 200:
+                        st.session_state[f"real_{lbl}"] = tog
+                        st.success(f"{lbl} → {state_str.upper()}")
+                    else:
+                        st.error("ESP failed")
+                        st.rerun()
+                except:
+                    st.error("Connection failed")
+                    st.rerun()
+
+# ── Tab 2: Natural Language Chat ───────────────────────────────────
+with tab2:
+    st.title("Talk to your ESP8266 (Groq Agent)")
+
+    # Chat history
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    for msg in st.session_state.messages:
+        role = "assistant" if isinstance(msg, AIMessage) else "user"
+        with st.chat_message(role):
+            st.markdown(msg.content)
+
+    # Input
+    if prompt := st.chat_input("e.g. turn D5 on, status of D1 and D2, all off..."):
+        st.session_state.messages.append(HumanMessage(content=prompt))
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                try:
+                    response = agent_executor.invoke({
+                        "input": prompt,
+                        "chat_history": st.session_state.messages,
+                    })
+                    answer = response["output"]
+                    st.markdown(answer)
+                    st.session_state.messages.append(AIMessage(content=answer))
+                except Exception as e:
+                    st.error(f"Agent error: {str(e)}")
+
+    if st.button("Clear chat"):
+        st.session_state.messages = []
+        st.rerun()
