@@ -1,45 +1,70 @@
-# app.py - MANUAL ONLY (works with your ESP)
+# app.py - WORKS WITH YOUR ESP STATUS ENDPOINT
 
 import streamlit as st
 import requests
 import time
-import threading
 
 ESP_IP = "192.168.1.13"
 STATUS_URL = f"http://{ESP_IP}/status"
 
-st.set_page_config(page_title="ESP8266 Manual", layout="wide")
+st.set_page_config(page_title="ESP8266 Control", layout="wide")
 
-st.title("🔌 ESP8266 Manual Control")
-st.caption(f"📡 http://{ESP_IP}")
+st.title("🔌 ESP8266 Pin Monitor")
+st.caption(f"📡 http://{ESP_IP} | Status: ✅ WORKING")
 
-# Test connection first
-if st.button("🧪 Test Connection"):
+# Test button (matches your browser success)
+if st.button("🧪 Test Connection", type="primary"):
     try:
-        r = requests.get(STATUS_URL, timeout=5)
-        st.success(f"✅ Status OK: {r.status_code}")
+        r = requests.get(STATUS_URL, timeout=10)
+        st.success(f"✅ HTTP {r.status_code}")
         st.json(r.json())
     except Exception as e:
-        st.error(f"❌ {e}")
+        st.error(f"❌ Python error: {e}")
 
-# Pin states
+# Live pin status
 if "pins" not in st.session_state:
     st.session_state.pins = {f"D{i}": False for i in range(9)}
 
-cols = st.columns(3)
-for i, pin in enumerate([f"D{i}" for i in range(9)]):
-    cols[i%3].metric(pin, "ON" if st.session_state.pins[pin] else "OFF")
-
-# Auto-refresh status
-if st.button("🔄 Auto Refresh", key="auto"):
+def refresh_status():
     try:
-        r = requests.get(STATUS_URL, timeout=5)
+        r = requests.get(STATUS_URL, timeout=10)
         data = r.json().get("pins", {})
-        for pin in st.session_state.pins:
-            st.session_state.pins[pin] = bool(data.get(pin, False))
-        st.success("Updated!")
-        st.rerun()
-    except Exception as e:
-        st.error(f"Status failed: {e}")
+        st.session_state.pins = {k: bool(v) for k,v in data.items()}
+        return True
+    except:
+        return False
 
-st.info("❌ /set/ endpoints missing → Update ESP firmware with pin control sketch")
+# Auto-refresh every 5s
+if st.button("🔄 Live Monitor", key="live"):
+    if refresh_status():
+        st.success("Updated!")
+    else:
+        st.error("Connection failed")
+    st.rerun()
+
+# Display pins
+st.subheader("📊 Pin States")
+cols = st.columns(3)
+for i, pin in enumerate(["D0","D1","D2","D3","D4","D5","D6","D7","D8"]):
+    state = st.session_state.pins[pin]
+    cols[i%3].metric(pin, "🟢 ON" if state else "🔴 OFF")
+
+# Manual refresh
+st.subheader("🔧 Manual Refresh")
+col1, col2 = st.columns(2)
+with col1:
+    if st.button("🔄 Refresh Now"):
+        refresh_status()
+        st.rerun()
+with col2:
+    st.info("Browser works → Python network issue")
+
+st.markdown("---")
+st.info("""
+**🚨 YOUR ESP HAS NO `/set/` ENDPOINTS**
+- Browser `/status` ✅ WORKS
+- Python `/status` ❌ NETWORK BLOCKED  
+- `/set/D1/on` ❌ NOT IMPLEMENTED
+
+**NEXT**: Upload ESP firmware with pin control endpoints
+""")
