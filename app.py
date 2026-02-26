@@ -82,6 +82,10 @@ tools = [set_pin, get_all_pin_status]
 # LLM + ReAct Agent
 # ────────────────────────────────────────────────
 
+# ────────────────────────────────────────────────
+# LLM + Agent
+# ────────────────────────────────────────────────
+
 llm = ChatGroq(
     groq_api_key=GROQ_API_KEY,
     model_name="llama-3.1-70b-versatile",
@@ -105,7 +109,7 @@ prompt = ChatPromptTemplate.from_messages([
     ("system", system_text),
     MessagesPlaceholder("chat_history"),
     ("human", "{input}"),
-    MessagesPlaceholder("agent_scratchpad"),      # ← this line is required
+    MessagesPlaceholder("agent_scratchpad"),           # ← this fixes the error
 ])
 
 agent = create_react_agent(
@@ -225,3 +229,4 @@ with tab2:
     if st.button("Clear conversation", type="primary"):
         st.session_state.messages = []
         st.rerun()
+
