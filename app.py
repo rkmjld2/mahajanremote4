@@ -1,37 +1,45 @@
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
+# app.py - MANUAL ONLY (works with your ESP)
 
-const char* ssid = "YOUR_WIFI";
-const char* password = "YOUR_WIFI_PASS";
+import streamlit as st
+import requests
+import time
+import threading
 
-ESP8266WebServer server(80);
-bool pins[9] = {0};
+ESP_IP = "192.168.1.13"
+STATUS_URL = f"http://{ESP_IP}/status"
 
-void setup() {
-  Serial.begin(115200);
-  
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) delay(500);
-  Serial.println("IP: " + WiFi.localIP().toString());
+st.set_page_config(page_title="ESP8266 Manual", layout="wide")
 
-  // STATUS endpoint (already works)
-  server.on("/status", [](){
-    String json = "{\"pins\":{";
-    for(int i=0; i<9; i++) json += "\"D"+String(i)+"\":" + String(pins[i]) + ",";
-    json += "}}";
-    server.send(200, "application/json", json);
-  });
+st.title("🔌 ESP8266 Manual Control")
+st.caption(f"📡 http://{ESP_IP}")
 
-  // ADD THESE PIN CONTROL ENDPOINTS
-  server.on("/set/D0/on", [](){ pins[0]=1; server.send(200); });
-  server.on("/set/D0/off", [](){ pins[0]=0; server.send(200); });
-  server.on("/set/D1/on", [](){ pins[1]=1; server.send(200); });
-  server.on("/set/D1/off", [](){ pins[1]=0; server.send(200); });
-  // Repeat D2-D8...
+# Test connection first
+if st.button("🧪 Test Connection"):
+    try:
+        r = requests.get(STATUS_URL, timeout=5)
+        st.success(f"✅ Status OK: {r.status_code}")
+        st.json(r.json())
+    except Exception as e:
+        st.error(f"❌ {e}")
 
-  server.begin();
-}
+# Pin states
+if "pins" not in st.session_state:
+    st.session_state.pins = {f"D{i}": False for i in range(9)}
 
-void loop() {
-  server.handleClient();
-}
+cols = st.columns(3)
+for i, pin in enumerate([f"D{i}" for i in range(9)]):
+    cols[i%3].metric(pin, "ON" if st.session_state.pins[pin] else "OFF")
+
+# Auto-refresh status
+if st.button("🔄 Auto Refresh", key="auto"):
+    try:
+        r = requests.get(STATUS_URL, timeout=5)
+        data = r.json().get("pins", {})
+        for pin in st.session_state.pins:
+            st.session_state.pins[pin] = bool(data.get(pin, False))
+        st.success("Updated!")
+        st.rerun()
+    except Exception as e:
+        st.error(f"Status failed: {e}")
+
+st.info("❌ /set/ endpoints missing → Update ESP firmware with pin control sketch")
