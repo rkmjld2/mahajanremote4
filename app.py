@@ -85,6 +85,11 @@ tools = [set_pin, get_all_pin_status]
 # ────────────────────────────────────────────────
 # LLM + Agent
 # ────────────────────────────────────────────────
+# ────────────────────────────────────────────────
+# LLM + ReAct Agent – using official prompt from hub
+# ────────────────────────────────────────────────
+
+from langchain import hub
 
 llm = ChatGroq(
     groq_api_key=GROQ_API_KEY,
@@ -93,9 +98,13 @@ llm = ChatGroq(
     max_tokens=650,
 )
 
-system_text = f"""You are a helpful ESP8266 pin controller assistant.
-Current time: {datetime.now().strftime("%Y-%m-%d %H:%M IST")}
+# Pull the official ReAct prompt – it has all required variables
+prompt = hub.pull("hwchase17/react")
 
+# Optional: customize the system part (append your instructions)
+# If you want your custom text, do this instead:
+custom_system = f"""You are a helpful ESP8266 pin controller assistant.
+Current time: {datetime.now().strftime("%Y-%m-%d %H:%M IST")}
 Available pins: {', '.join(PINS)}
 
 Rules:
@@ -103,15 +112,28 @@ Rules:
 • Use set_pin only when user clearly wants to change a pin state
 • Be concise and polite
 • If command is ambiguous → ask for clarification
-"""
 
-prompt = ChatPromptTemplate.from_messages([
-    ("system", system_text),
-    MessagesPlaceholder("chat_history"),
-    ("human", "{input}"),
-    MessagesPlaceholder("agent_scratchpad"),           # ← this fixes the error
-])
+{{tools}}
 
+Use the following format:
+
+Question: the input question you must answer
+Thought: you should always think about what to do
+Action: the action to take, should be one of [{{tool_names}}]
+Action Input: the input to the action
+Observation: the result of the action
+... (this Thought/Action/Action Input/Observation can repeat N times)
+Thought: I now know the final answer
+Final Answer: the final answer to the original input question
+
+Begin!
+
+Question: {{input}}
+{{agent_scratchpad}}"""
+
+prompt = ChatPromptTemplate.from_template(custom_system)
+
+# Now create the agent – this should NOT raise the missing variables error
 agent = create_react_agent(
     llm=llm,
     tools=tools,
@@ -125,6 +147,7 @@ agent_executor = AgentExecutor(
     handle_parsing_errors=True,
     max_iterations=12,
 )
+
 
 # ────────────────────────────────────────────────
 # Streamlit UI
@@ -229,4 +252,5 @@ with tab2:
     if st.button("Clear conversation", type="primary"):
         st.session_state.messages = []
         st.rerun()
+
 
