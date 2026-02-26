@@ -81,15 +81,9 @@ tools = [set_pin, get_all_pin_status]
 # ────────────────────────────────────────────────
 # LLM + ReAct Agent
 # ────────────────────────────────────────────────
-
 # ────────────────────────────────────────────────
-# LLM + Agent
+# LLM + ReAct Agent (hard-coded prompt – no hub.pull)
 # ────────────────────────────────────────────────
-# ────────────────────────────────────────────────
-# LLM + ReAct Agent – using official prompt from hub
-# ────────────────────────────────────────────────
-
-from langchain import hub
 
 llm = ChatGroq(
     groq_api_key=GROQ_API_KEY,
@@ -98,42 +92,45 @@ llm = ChatGroq(
     max_tokens=650,
 )
 
-# Pull the official ReAct prompt – it has all required variables
-prompt = hub.pull("hwchase17/react")
+# Hard-coded classic ReAct prompt (exact equivalent of hwchase17/react)
+react_prompt_template = """Answer the following questions as best you can. You have access to the following tools:
 
-# Optional: customize the system part (append your instructions)
-# If you want your custom text, do this instead:
-custom_system = f"""You are a helpful ESP8266 pin controller assistant.
-Current time: {datetime.now().strftime("%Y-%m-%d %H:%M IST")}
-Available pins: {', '.join(PINS)}
-
-Rules:
-• Use get_all_pin_status tool when user asks about current state / status
-• Use set_pin only when user clearly wants to change a pin state
-• Be concise and polite
-• If command is ambiguous → ask for clarification
-
-{{tools}}
+{tools}
 
 Use the following format:
 
 Question: the input question you must answer
 Thought: you should always think about what to do
-Action: the action to take, should be one of [{{tool_names}}]
+Action: the action to take, should be one of [{tool_names}]
 Action Input: the input to the action
 Observation: the result of the action
 ... (this Thought/Action/Action Input/Observation can repeat N times)
 Thought: I now know the final answer
 Final Answer: the final answer to the original input question
 
+Additional instructions for this ESP8266 controller:
+You are a helpful ESP8266 pin controller assistant.
+Current time: {now}
+Available pins: {pins}
+
+Rules:
+• Use get_all_pin_status tool when user asks about current state / status
+• Use set_pin only when user clearly wants to change a pin state (on/off)
+• Be concise and polite
+• If command is ambiguous → ask for clarification
+
 Begin!
 
-Question: {{input}}
-{{agent_scratchpad}}"""
+Question: {input}
+{agent_scratchpad}"""
 
-prompt = ChatPromptTemplate.from_template(custom_system)
+prompt = ChatPromptTemplate.from_template(
+    react_prompt_template
+).partial(
+    now=datetime.now().strftime("%Y-%m-%d %H:%M IST"),
+    pins=', '.join(PINS)
+)
 
-# Now create the agent – this should NOT raise the missing variables error
 agent = create_react_agent(
     llm=llm,
     tools=tools,
@@ -147,7 +144,6 @@ agent_executor = AgentExecutor(
     handle_parsing_errors=True,
     max_iterations=12,
 )
-
 
 # ────────────────────────────────────────────────
 # Streamlit UI
@@ -252,5 +248,6 @@ with tab2:
     if st.button("Clear conversation", type="primary"):
         st.session_state.messages = []
         st.rerun()
+
 
 
