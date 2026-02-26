@@ -6,7 +6,7 @@ import json
 import time
 
 # YOUR ngrok URL - DIRECTLY BUILT-IN
-ESP_IP = "19c9-2401-4900-8910-8704-2148-89f0-1383-cfb6.ngrok-free.app"
+ESP_IP = "https://19c9-2401-4900-8910-8704-2148-89f0-1383-cfb6.ngrok-free.app"
 STATUS_URL = f"http://{ESP_IP}/status"
 PINS = ["D0","D1","D2","D3","D4","D5","D6","D7","D8"]
 
@@ -133,3 +133,4 @@ st.info("""
 
 **🌍 GLOBAL CONTROL:** Phone data → toggle D1 → ESP LED lights up anywhere!
 """)
+
