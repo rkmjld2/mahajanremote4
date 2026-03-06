@@ -1,269 +1,77 @@
-from flask import Flask, render_template_string, request, jsonify
+import streamlit as st
+import requests
 import time
 
-app = Flask(__name__)
-app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
-
-# -------------------------------
-# PIN STATES
-# -------------------------------
-
-pins = {
-"D0":"OFF","D1":"OFF","D2":"OFF","D3":"OFF","D4":"OFF",
-"D5":"OFF","D6":"OFF","D7":"OFF","D8":"OFF"
-}
-
-last_seen = 0
-wifi_rssi = 0
-uptime = 0
-
-# -------------------------------
-# HTML DASHBOARD
-# -------------------------------
-
-HTML = '''
-
-<!DOCTYPE html>
-<html>
-
-<head>
-
-<title>ESP8266 ULTRA IoT Dashboard</title>
+# YOUR CLOUD API
+SERVER = "https://mahajan234.pythonanywhere.com"
 
-<meta name="viewport" content="width=device-width, initial-scale=1">
+PINS = ["D0","D1","D2","D3","D4","D5","D6","D7","D8"]
 
-<style>
+st.set_page_config(page_title="ESP8266 IoT Dashboard", layout="wide")
 
-body{
-font-family:Arial;
-background:#0f2027;
-background:linear-gradient(to right,#2c5364,#203a43,#0f2027);
-color:white;
-text-align:center;
-}
+st.title("🏠 Smart Home IoT Dashboard")
 
-h1{margin-top:20px}
+# ------------------------
+# GET STATUS FROM SERVER
+# ------------------------
 
-.grid{
-display:grid;
-grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
-gap:20px;
-max-width:1000px;
-margin:auto;
-padding:20px;
-}
+def get_status():
+    try:
+        r = requests.get(SERVER+"/api",timeout=5)
+        return r.json()
+    except:
+        return None
 
-.card{
-background:#1b2a33;
-padding:20px;
-border-radius:12px;
-box-shadow:0 0 15px black;
-}
+data = get_status()
 
-.switch{
-position:relative;
-display:inline-block;
-width:60px;
-height:34px;
-}
+# ------------------------
+# DEVICE STATUS
+# ------------------------
 
-.switch input{display:none}
+if data:
+    online = data["online"]
+    rssi = data["rssi"]
+    uptime = data["uptime"]
+    pins = data["pins"]
+else:
+    online = False
+    pins = {p:"OFF" for p in PINS}
+    rssi = 0
+    uptime = 0
 
-.slider{
-position:absolute;
-cursor:pointer;
-top:0;left:0;right:0;bottom:0;
-background:#ccc;
-transition:.4s;
-border-radius:34px;
-}
+col1,col2,col3 = st.columns(3)
 
-.slider:before{
-position:absolute;
-content:"";
-height:26px;width:26px;
-left:4px;bottom:4px;
-background:white;
-transition:.4s;
-border-radius:50%;
-}
+col1.metric("Device Status","🟢 ONLINE" if online else "🔴 OFFLINE")
+col2.metric("WiFi RSSI",rssi)
+col3.metric("Uptime",uptime)
 
-input:checked + .slider{
-background:#00c853
-}
+st.divider()
 
-input:checked + .slider:before{
-transform:translateX(26px)
-}
+# ------------------------
+# PIN CONTROL
+# ------------------------
 
-.status{
-font-size:22px;
-margin-bottom:10px
-}
+st.subheader("Pin Control")
 
-.online{color:#00ff9c}
-.offline{color:#ff4444}
+cols = st.columns(3)
 
-.info{
-margin-top:10px;
-font-size:14px;
-opacity:.8
-}
+for i,p in enumerate(PINS):
 
-</style>
+    with cols[i%3]:
 
-<script>
+        state = pins[p]
 
-function toggle(pin,state){
+        if st.toggle(p,value=(state=="ON")):
 
-fetch("/set/"+pin+"/"+state)
+            requests.get(f"{SERVER}/set/{p}/ON")
 
-}
+        else:
 
-function update(){
+            requests.get(f"{SERVER}/set/{p}/OFF")
 
-fetch("/api")
-.then(r=>r.json())
-.then(data=>{
+# ------------------------
+# AUTO REFRESH
+# ------------------------
 
-document.getElementById("wifi").innerText=data.rssi
-document.getElementById("uptime").innerText=data.uptime
-
-for(const p in data.pins){
-
-let sw=document.getElementById(p)
-sw.checked=data.pins[p]=="ON"
-
-}
-
-let s=document.getElementById("status")
-
-if(data.online){
-
-s.innerHTML="ONLINE"
-s.className="online"
-
-}else{
-
-s.innerHTML="OFFLINE"
-s.className="offline"
-
-}
-
-})
-
-}
-
-setInterval(update,2000)
-
-</script>
-
-</head>
-
-<body>
-
-<h1>🏠 Smart Home IoT Dashboard</h1>
-
-<div class="status">
-Device Status :
-<span id="status">Loading...</span>
-</div>
-
-<div class="info">
-WiFi Signal : <span id="wifi">0</span> dBm |
-Uptime : <span id="uptime">0</span> sec
-</div>
-
-<div class="grid">
-
-{% for p in pins %}
-
-<div class="card">
-
-<h3>{{p}}</h3>
-
-<label class="switch">
-
-<input type="checkbox" id="{{p}}"
-onchange="toggle('{{p}}',this.checked?'ON':'OFF')">
-
-<span class="slider"></span>
-
-</label>
-
-</div>
-
-{% endfor %}
-
-</div>
-
-</body>
-
-</html>
-
-'''
-
-# -------------------------------
-# WEB PAGE
-# -------------------------------
-
-@app.route("/")
-def home():
-    return render_template_string(HTML,pins=pins)
-
-# -------------------------------
-# SET PIN
-# -------------------------------
-
-@app.route("/set/<pin>/<state>")
-def setpin(pin,state):
-
-    global last_seen
-
-    if pin in pins:
-        pins[pin] = state
-
-    last_seen = time.time()
-
-    return "OK"
-
-# -------------------------------
-# API STATUS
-# -------------------------------
-
-@app.route("/api")
-def api():
-
-    online = (time.time() - last_seen) < 20
-
-    return jsonify({
-        "pins":pins,
-        "online":online,
-        "rssi":wifi_rssi,
-        "uptime":uptime
-    })
-
-# -------------------------------
-# ESP8266 REQUEST
-# -------------------------------
-
-@app.route("/get")
-def get():
-
-    global last_seen
-    global wifi_rssi
-    global uptime
-
-    last_seen = time.time()
-
-    wifi_rssi = request.args.get("rssi",0)
-    uptime = request.args.get("uptime",0)
-
-    return ",".join([f"{p}:{pins[p]}" for p in pins])
-
-# -------------------------------
-# MAIN
-# -------------------------------
-
-if __name__=="__main__":
-    app.run()
+time.sleep(2)
+st.rerun()
