@@ -1,43 +1,51 @@
-from flask import Flask, request, jsonify
-import time
+import streamlit as st
+import requests
+from streamlit_autorefresh import st_autorefresh
 
-app = Flask(__name__)
+SERVER = "https://mahajan234.pythonanywhere.com"
 
-device_status = {
-    "pins": {},
-    "rssi": "",
-    "uptime": "",
-    "last_seen": 0
-}
+st.set_page_config(page_title="ESP8266 IoT Dashboard", layout="wide")
 
-@app.route("/update", methods=["POST"])
-def update():
-    data = request.json
+# Auto refresh every 5 seconds
+st_autorefresh(interval=5000, key="refresh")
 
-    device_status["pins"] = data.get("pins", {})
-    device_status["rssi"] = data.get("rssi", "")
-    device_status["uptime"] = data.get("uptime", "")
-    device_status["last_seen"] = time.time()
+st.title("ESP8266 Remote Control Dashboard")
 
-    return jsonify({"status": "ok"})
+# Get device status
+try:
+    r = requests.get(SERVER + "/status", timeout=3)
+    data = r.json()
 
+    online = data["online"]
+    pins = data["pins"]
 
-@app.route("/status")
-def status():
+except:
+    online = False
+    pins = {}
 
-    # check last update
-    if time.time() - device_status["last_seen"] > 20:
-        online = False
-    else:
-        online = True
+# Device status display
+if online:
+    st.success("Device ONLINE")
+else:
+    st.error("Device OFFLINE")
 
-    return jsonify({
-        "online": online,
-        "pins": device_status["pins"],
-        "rssi": device_status["rssi"],
-        "uptime": device_status["uptime"]
-    })
+# Pins
+pin_list = ["D0","D1","D2","D3","D4","D5","D6","D7","D8"]
 
+cols = st.columns(3)
 
-if __name__ == "__main__":
-    app.run()
+for i,p in enumerate(pin_list):
+
+    with cols[i%3]:
+
+        state = pins.get(p,"OFF")
+
+        st.write("###",p)
+
+        if st.button(f"{p} ON"):
+            requests.get(f"{SERVER}/set/{p}/ON")
+
+        if st.button(f"{p} OFF"):
+            requests.get(f"{SERVER}/set/{p}/OFF")
+
+        st.write("State:",state)
