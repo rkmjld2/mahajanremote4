@@ -1,67 +1,88 @@
 import streamlit as st
 import requests
-import time
 
 SERVER = "https://mahajan234.pythonanywhere.com"
 
-st.set_page_config(page_title="ESP8266 IoT", layout="wide")
+st.set_page_config(
+    page_title="ESP8266 IoT Dashboard",
+    layout="wide"
+)
 
-st.title("🏠 ESP8266 Remote Control")
+st.title("🏠 ESP8266 Smart Control")
 
-# ---------- GET DATA ----------
-def get_data():
-    try:
-        r = requests.get(SERVER+"/api", timeout=2)
-        return r.json()
-    except:
-        return None
+# -------------------------------
+# Get device status
+# -------------------------------
+try:
+    r = requests.get(SERVER + "/api", timeout=3)
+    data = r.json()
 
-data = get_data()
-
-# ---------- DEVICE STATUS ----------
-if data:
-
-    if data["online"]:
-        st.success("Device ONLINE")
-    else:
-        st.error("Device OFFLINE")
-
-    st.write("WiFi:", data["rssi"], "dBm")
-    st.write("Uptime:", data["uptime"], "sec")
-
+    online = data["online"]
     pins = data["pins"]
+    rssi = data["rssi"]
+    uptime = data["uptime"]
 
-else:
+except:
     st.error("Server not reachable")
-    pins={}
+    st.stop()
 
-# ---------- TOGGLE SWITCH GRID ----------
-st.subheader("GPIO Control")
+# -------------------------------
+# Device status
+# -------------------------------
+if online:
+    st.success("Device ONLINE")
+else:
+    st.error("Device OFFLINE")
 
+st.write(f"📶 WiFi RSSI: {rssi}")
+st.write(f"⏱ Uptime: {uptime}")
+
+st.divider()
+
+# -------------------------------
+# Pin Controls
+# -------------------------------
 cols = st.columns(3)
 
-i=0
+pin_list = ["D1","D2","D3","D4","D5","D6","D7","D8"]
 
-for pin,state in pins.items():
+for i,pin in enumerate(pin_list):
 
-    with cols[i%3]:
+    with cols[i % 3]:
 
-        toggle = st.toggle(pin, value=(state=="ON"), key=pin)
+        current_state = pins[pin] == "ON"
 
-        if toggle != (state=="ON"):
+        toggle = st.toggle(pin, value=current_state)
 
-            new_state="ON" if toggle else "OFF"
+        if toggle != current_state:
+
+            new_state = "ON" if toggle else "OFF"
 
             try:
-                requests.get(f"{SERVER}/set/{pin}/{new_state}")
+                requests.get(
+                    f"{SERVER}/set/{pin}/{new_state}",
+                    timeout=2
+                )
             except:
-                pass
+                st.warning("Command failed")
 
-            time.sleep(0.3)
-            st.rerun()
+        if current_state:
+            st.success("ON")
+        else:
+            st.info("OFF")
 
-    i+=1
+# -------------------------------
+# Auto refresh
+# -------------------------------
+st.caption("Auto refresh every 3 seconds")
 
-# ---------- AUTO REFRESH ----------
-time.sleep(3)
-st.rerun()
+st.markdown(
+"""
+<script>
+setTimeout(function(){
+window.location.reload();
+},3000);
+</script>
+""",
+unsafe_allow_html=True
+)
