@@ -1,108 +1,269 @@
-import streamlit as st
+from flask import Flask, render_template_string, request, jsonify
 import time
 
-st.set_page_config(page_title="ESP8266 IoT Dashboard", layout="wide")
+app = Flask(__name__)
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
-# --------------------------
-# GLOBAL PIN STATES
-# --------------------------
+# -------------------------------
+# PIN STATES
+# -------------------------------
 
-if "pins" not in st.session_state:
-    st.session_state.pins={
-        "D0":"OFF","D1":"OFF","D2":"OFF","D3":"OFF","D4":"OFF",
-        "D5":"OFF","D6":"OFF","D7":"OFF","D8":"OFF"
-    }
+pins = {
+"D0":"OFF","D1":"OFF","D2":"OFF","D3":"OFF","D4":"OFF",
+"D5":"OFF","D6":"OFF","D7":"OFF","D8":"OFF"
+}
 
-if "last_seen" not in st.session_state:
-    st.session_state.last_seen=0
+last_seen = 0
+wifi_rssi = 0
+uptime = 0
 
-if "wifi_rssi" not in st.session_state:
-    st.session_state.wifi_rssi=0
+# -------------------------------
+# HTML DASHBOARD
+# -------------------------------
 
-if "uptime" not in st.session_state:
-    st.session_state.uptime=0
+HTML = '''
 
+<!DOCTYPE html>
+<html>
 
-pins=st.session_state.pins
+<head>
 
-# --------------------------
-# CHECK DEVICE ONLINE
-# --------------------------
+<title>ESP8266 ULTRA IoT Dashboard</title>
 
-online=False
-if time.time()-st.session_state.last_seen < 10:
-    online=True
+<meta name="viewport" content="width=device-width, initial-scale=1">
 
-# --------------------------
-# HEADER
-# --------------------------
+<style>
 
-st.title("🏠 Smart Home IoT Dashboard")
+body{
+font-family:Arial;
+background:#0f2027;
+background:linear-gradient(to right,#2c5364,#203a43,#0f2027);
+color:white;
+text-align:center;
+}
 
-col1,col2,col3=st.columns(3)
+h1{margin-top:20px}
 
-if online:
-    col1.success("Device ONLINE")
-else:
-    col1.error("Device OFFLINE")
+.grid{
+display:grid;
+grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+gap:20px;
+max-width:1000px;
+margin:auto;
+padding:20px;
+}
 
-col2.metric("WiFi Signal", st.session_state.wifi_rssi)
-col3.metric("Uptime", st.session_state.uptime)
+.card{
+background:#1b2a33;
+padding:20px;
+border-radius:12px;
+box-shadow:0 0 15px black;
+}
 
-st.divider()
+.switch{
+position:relative;
+display:inline-block;
+width:60px;
+height:34px;
+}
 
-# --------------------------
-# PIN CONTROL GRID
-# --------------------------
+.switch input{display:none}
 
-cols=st.columns(3)
+.slider{
+position:absolute;
+cursor:pointer;
+top:0;left:0;right:0;bottom:0;
+background:#ccc;
+transition:.4s;
+border-radius:34px;
+}
 
-i=0
-for p in pins:
+.slider:before{
+position:absolute;
+content:"";
+height:26px;width:26px;
+left:4px;bottom:4px;
+background:white;
+transition:.4s;
+border-radius:50%;
+}
 
-    with cols[i%3]:
+input:checked + .slider{
+background:#00c853
+}
 
-        st.subheader(p)
+input:checked + .slider:before{
+transform:translateX(26px)
+}
 
-        state=st.toggle(
-            "Switch",
-            value=(pins[p]=="ON"),
-            key=p
-        )
+.status{
+font-size:22px;
+margin-bottom:10px
+}
 
-        pins[p]="ON" if state else "OFF"
+.online{color:#00ff9c}
+.offline{color:#ff4444}
 
-    i+=1
+.info{
+margin-top:10px;
+font-size:14px;
+opacity:.8
+}
 
+</style>
 
-# --------------------------
-# COMMAND STRING FOR ESP8266
-# --------------------------
+<script>
 
-cmd=",".join([f"{p}:{pins[p]}" for p in pins])
+function toggle(pin,state){
 
-st.divider()
+fetch("/set/"+pin+"/"+state)
 
-st.subheader("ESP8266 Command API")
+}
 
-st.code(cmd)
+function update(){
 
-st.write("ESP8266 should fetch this command string from the Streamlit endpoint.")
+fetch("/api")
+.then(r=>r.json())
+.then(data=>{
 
-# --------------------------
-# DEVICE UPDATE SECTION
-# --------------------------
+document.getElementById("wifi").innerText=data.rssi
+document.getElementById("uptime").innerText=data.uptime
 
-st.divider()
-st.subheader("Device Update")
+for(const p in data.pins){
 
-rssi=st.number_input("WiFi RSSI",value=0)
-uptime=st.number_input("Device Uptime",value=0)
+let sw=document.getElementById(p)
+sw.checked=data.pins[p]=="ON"
 
-if st.button("Update Device Status"):
+}
 
-    st.session_state.last_seen=time.time()
-    st.session_state.wifi_rssi=rssi
-    st.session_state.uptime=uptime
+let s=document.getElementById("status")
 
-    st.success("Device Updated")
+if(data.online){
+
+s.innerHTML="ONLINE"
+s.className="online"
+
+}else{
+
+s.innerHTML="OFFLINE"
+s.className="offline"
+
+}
+
+})
+
+}
+
+setInterval(update,2000)
+
+</script>
+
+</head>
+
+<body>
+
+<h1>🏠 Smart Home IoT Dashboard</h1>
+
+<div class="status">
+Device Status :
+<span id="status">Loading...</span>
+</div>
+
+<div class="info">
+WiFi Signal : <span id="wifi">0</span> dBm |
+Uptime : <span id="uptime">0</span> sec
+</div>
+
+<div class="grid">
+
+{% for p in pins %}
+
+<div class="card">
+
+<h3>{{p}}</h3>
+
+<label class="switch">
+
+<input type="checkbox" id="{{p}}"
+onchange="toggle('{{p}}',this.checked?'ON':'OFF')">
+
+<span class="slider"></span>
+
+</label>
+
+</div>
+
+{% endfor %}
+
+</div>
+
+</body>
+
+</html>
+
+'''
+
+# -------------------------------
+# WEB PAGE
+# -------------------------------
+
+@app.route("/")
+def home():
+    return render_template_string(HTML,pins=pins)
+
+# -------------------------------
+# SET PIN
+# -------------------------------
+
+@app.route("/set/<pin>/<state>")
+def setpin(pin,state):
+
+    global last_seen
+
+    if pin in pins:
+        pins[pin] = state
+
+    last_seen = time.time()
+
+    return "OK"
+
+# -------------------------------
+# API STATUS
+# -------------------------------
+
+@app.route("/api")
+def api():
+
+    online = (time.time() - last_seen) < 20
+
+    return jsonify({
+        "pins":pins,
+        "online":online,
+        "rssi":wifi_rssi,
+        "uptime":uptime
+    })
+
+# -------------------------------
+# ESP8266 REQUEST
+# -------------------------------
+
+@app.route("/get")
+def get():
+
+    global last_seen
+    global wifi_rssi
+    global uptime
+
+    last_seen = time.time()
+
+    wifi_rssi = request.args.get("rssi",0)
+    uptime = request.args.get("uptime",0)
+
+    return ",".join([f"{p}:{pins[p]}" for p in pins])
+
+# -------------------------------
+# MAIN
+# -------------------------------
+
+if __name__=="__main__":
+    app.run()
