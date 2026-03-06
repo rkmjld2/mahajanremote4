@@ -4,57 +4,52 @@ import requests
 SERVER = "https://mahajan234.pythonanywhere.com"
 
 st.set_page_config(
-    page_title="ESP8266 IoT Dashboard",
+    page_title="ESP8266 IoT Control",
     layout="wide"
 )
 
-st.title("🏠 ESP8266 Smart Control")
+st.title("🏠 ESP8266 Smart Switch Panel")
 
-# -------------------------------
+# ---------------------------
 # Get device status
-# -------------------------------
+# ---------------------------
 try:
     r = requests.get(SERVER + "/api", timeout=3)
     data = r.json()
 
     online = data["online"]
     pins = data["pins"]
-    rssi = data["rssi"]
-    uptime = data["uptime"]
 
 except:
     st.error("Server not reachable")
     st.stop()
 
-# -------------------------------
+# ---------------------------
 # Device status
-# -------------------------------
+# ---------------------------
 if online:
     st.success("Device ONLINE")
 else:
     st.error("Device OFFLINE")
 
-st.write(f"📶 WiFi RSSI: {rssi}")
-st.write(f"⏱ Uptime: {uptime}")
-
 st.divider()
 
-# -------------------------------
-# Pin Controls
-# -------------------------------
-cols = st.columns(3)
+# ---------------------------
+# Pins (including D0)
+# ---------------------------
+pin_list = ["D0","D1","D2","D3","D4","D5","D6","D7","D8"]
 
-pin_list = ["D1","D2","D3","D4","D5","D6","D7","D8"]
+cols = st.columns(3)
 
 for i,pin in enumerate(pin_list):
 
     with cols[i % 3]:
 
-        current_state = pins[pin] == "ON"
+        state = pins[pin] == "ON"
 
-        toggle = st.toggle(pin, value=current_state)
+        toggle = st.toggle(pin, value=state)
 
-        if toggle != current_state:
+        if toggle != state:
 
             new_state = "ON" if toggle else "OFF"
 
@@ -66,16 +61,9 @@ for i,pin in enumerate(pin_list):
             except:
                 st.warning("Command failed")
 
-        if current_state:
-            st.success("ON")
-        else:
-            st.info("OFF")
-
-# -------------------------------
+# ---------------------------
 # Auto refresh
-# -------------------------------
-st.caption("Auto refresh every 3 seconds")
-
+# ---------------------------
 st.markdown(
 """
 <script>
